@@ -1217,10 +1217,11 @@ window.closeLightbox = () => {
     lb.style.opacity = '0'; setTimeout(() => lb.style.display = 'none', 250);
 };
 
-// ── 8. GPS TRACKING WITH SIMPLE LOCATE ──────────────────────
-let userMarker = null, watchId = null, tracking = false;
+// ── 8. LEAFLET SIMPLE LOCATE INTEGRATION ──────────────────────
+let simpleLocate = null;
 const gpsButton = document.getElementById('gps-toggle');
 
+// Helper functions
 function clearNearbyTooltips() {
     nearbyTooltipIds.forEach(id => {
         const marker = markersMap[id];
@@ -1241,8 +1242,7 @@ function scheduleGPSRefresh(forceRouteRefresh = false) {
 }
 
 function setGPSButtonState(state) {
-    gpsButton.classList.remove('locating', 'gps-active');
-    const statusLight = gpsButton.querySelector('.gps-status-light');
+    gpsButton.classList.remove('active', 'locating', 'gps-active');
     if (state === 'locating') {
         gpsButton.classList.add('locating');
     } else if (state === 'active') {
@@ -1250,79 +1250,45 @@ function setGPSButtonState(state) {
     }
 }
 
-// GPS Tracking with SimpleLocate
-gpsButton.addEventListener('click', function() {
-    if (!tracking) {
-        if (!navigator.geolocation) return alert('Geolocation not supported.');
-        
-        tracking = true;
-        setGPSButtonState('locating');
-        
-        watchId = navigator.geolocation.watchPosition(
-            (position) => {
-                userLoc = { lat: position.coords.latitude, lng: position.coords.longitude };
-                
-                // Check geofence
-                const distFromCampus = getDistance(userLoc.lat, userLoc.lng, UOW_CENTER[0], UOW_CENTER[1]);
-                if (distFromCampus > 2000) {
-                    alert('Sorry, you are too far away. Move closer to the area for the tracking feature.');
-                    gpsButton.click(); // Turn off
-                    return;
-                }
-                
-                setGPSButtonState('active');
-                
-                // Create or update marker
-                if (!userMarker) {
-                    userMarker = L.circleMarker([userLoc.lat, userLoc.lng], {
-                        radius: 8,
-                        color: '#fff',
-                        weight: 2.5,
-                        fillColor: '#3b82f6',
-                        fillOpacity: 1,
-                        zIndexOffset: 1000
-                    }).addTo(map);
-                    flyToVisible([userLoc.lat, userLoc.lng], 19, { animate: true });
-                } else {
-                    userMarker.setLatLng([userLoc.lat, userLoc.lng]);
-                }
-                
-                // Update routes and proximity
-                scheduleGPSRefresh();
-            },
-            (error) => {
-                tracking = false;
-                setGPSButtonState('off');
-                userLoc = null;
-                if (activeTree) updateDetailMiniCoords(activeTree);
-                if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-                watchId = null;
-                console.error('Geolocation error:', error);
-                alert(error?.message || 'Unable to obtain your location.');
-            },
-            {
-                enableHighAccuracy: true,
-                timeout: 15000,
-                maximumAge: 5000
-            }
-        );
-    } else {
-        // Stop tracking
-        tracking = false;
-        setGPSButtonState('off');
-        userLoc = null;
-        if (activeTree) updateDetailMiniCoords(activeTree);
-        if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-        watchId = null;
-        if (userMarker) {
-            map.removeLayer(userMarker);
-            userMarker = null;
+function resetGPSContext() {
+    userLoc = null;
+    if (activeTree) updateDetailMiniCoords(activeTree);
+    lastUserRouteRenderLoc = null;
+    clearNearbyTooltips();
+    generateSmartRoutes({ force: true });
+}
+
+simpleLocate = new SimpleLocate({
+    button: gpsButton,
+    geofenceCenter: UOW_CENTER,
+    geofenceRadius: 2000,
+    highAccuracy: true,
+    timeout: 15000,
+    maximumAge: 5000,
+    onLocationFound: (location) => {
+        const shouldZoomToUser = !userLoc;
+        userLoc = {
+            lat: location.lat,
+            lng: location.lng,
+            accuracy: location.accuracy,
+            heading: location.heading
+        };
+
+        if (shouldZoomToUser) {
+            flyToVisible([userLoc.lat, userLoc.lng], 19, { animate: true });
         }
-        lastUserRouteRenderLoc = null;
-        clearNearbyTooltips();
-        generateSmartRoutes({ force: true });
+        scheduleGPSRefresh();
+    },
+    onLocationError: (error) => {
+        resetGPSContext();
+        if (error?.type === 'stopped') return;
+        console.error('Geolocation error:', error);
+        alert(error?.message || 'Unable to obtain your location.');
+    },
+    onGeofenceViolation: () => {
+        alert('Sorry, you are too far away. Move closer to the area for the tracking feature.');
     }
-});
+}).attachTo(map);
 
 document.getElementById('home-view').addEventListener('click', () => {
     fitHomeView({animate: true, duration: 0.8, maxZoom: 18});
